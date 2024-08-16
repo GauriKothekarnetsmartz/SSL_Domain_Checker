@@ -4,7 +4,7 @@ import socket
 from datetime import datetime, timedelta, timezone
 import re
 import whois
-from openpyxl import load_workbook
+from openpyxl import load_workbook, Workbook
 from openpyxl.styles import PatternFill
 import time
 import requests
@@ -75,20 +75,6 @@ def normalize_domain(domain):
         return re.sub(r'^\*\.|^\.', '', domain)
     return domain
 
-# Path to your Excel file
-excel_file = r'C:\Users\gauri.kothekar\Downloads\DomainExp.xlsx'
-
-# Read Excel file
-df = pd.read_excel(excel_file)
-
-# Ensure required columns exist
-if 'Domain' not in df.columns:
-    raise ValueError("The 'Domain' column is missing from the Excel file.")
-if 'Expiry' not in df.columns:
-    df['Expiry'] = ''
-if 'Prod Type' not in df.columns:
-    raise ValueError("The 'Prod Type' column is missing from the Excel file.")
-
 # Function to update expiry based on the product type and print information
 def update_expiry(row):
     domain = row['Domain']
@@ -115,55 +101,84 @@ def update_expiry(row):
             return expiration_date
     return 'Invalid Domain'
 
-df['Expiry'] = df.apply(update_expiry, axis=1)
+# Path to your Excel file on OneDrive
+excel_file = r'C:\Users\gauri.kothekar\OneDrive - Netsmartz LLC\DomainExp 14.xlsx'
 
-# Save updated Excel file
-df.to_excel(excel_file, index=False)
+# Load the existing workbook or create a new one if it doesn't exist
+try:
+    wb = load_workbook(excel_file)
+except FileNotFoundError:
+    wb = Workbook()
 
-# Load the workbook and sheet to apply conditional formatting
-wb = load_workbook(excel_file)
-ws = wb.active
+# Read the sheets into DataFrames
+sheet_names = wb.sheetnames
+df_dict = {}
+for sheet_name in sheet_names:
+    df_dict[sheet_name] = pd.read_excel(excel_file, sheet_name=sheet_name)
 
-# Define the fill colors
-highlight_fill_red = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')     # Red for within 7 days
-highlight_fill_orange = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')  # Orange for within 15 days
-highlight_fill_yellow = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')  # Yellow for within 1 month
-highlight_fill_green = PatternFill(start_color='00FF00', end_color='00FF00', fill_type='solid')    # Green for more than 1 month away
+# Process each sheet
+for sheet_name, df in df_dict.items():
+    if 'Domain' not in df.columns:
+        continue  # Skip sheets without the required column
+    if 'Expiry' not in df.columns:
+        df['Expiry'] = ''
+    if 'Prod Type' not in df.columns:
+        continue  # Skip sheets without the 'Prod Type' column
+    
+    # Update the expiry dates
+    df['Expiry'] = df.apply(update_expiry, axis=1)
+    
+    # Get the worksheet
+    ws = wb[sheet_name]
 
-# Get today's date and calculate the date ranges
-today = datetime.now(timezone.utc)
-seven_days_later = today + timedelta(days=7)
-fifteen_days_later = today + timedelta(days=15)
-one_month_later = today + timedelta(days=30)
+    # Remove existing data from the worksheet
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        ws.delete_rows(row[0].row)
+    
+    # Add header
+    for col_num, column_title in enumerate(df.columns, 1):
+        ws.cell(row=1, column=col_num, value=column_title)
+    
+    # Add data rows
+    for row_num, row_data in enumerate(df.values, 2):
+        for col_num, value in enumerate(row_data, 1):
+            ws.cell(row=row_num, column=col_num, value=value)
+    
+    # Apply conditional formatting
+    highlight_fill_red = PatternFill(start_color='FF0000', end_color='FF0000', fill_type='solid')
+    highlight_fill_orange = PatternFill(start_color='FFA500', end_color='FFA500', fill_type='solid')
+    highlight_fill_yellow = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+    highlight_fill_green = PatternFill(start_color='00FF00', end_color='00FF00', fill_type='solid')
 
-# Find the index of the 'Expiry' column
-expiry_col = 'Expiry'
-expiry_col_idx = df.columns.get_loc(expiry_col) + 1  # Excel columns are 1-based
+    today = datetime.now(timezone.utc)
+    seven_days_later = today + timedelta(days=7)
+    fifteen_days_later = today + timedelta(days=15)
+    one_month_later = today + timedelta(days=30)
 
-for row in range(2, ws.max_row + 1):  # Skip the header row
-    cell = ws.cell(row=row, column=expiry_col_idx)
-    domain_cell = ws.cell(row=row, column=df.columns.get_loc('Domain') + 1)
-    if cell.value and cell.value != 'Error':
-        try:
-            expiry_date = datetime.strptime(cell.value, '%Y-%m-%d')
-            expiry_date = expiry_date.replace(tzinfo=timezone.utc)
-            if today <= expiry_date <= seven_days_later:
-                cell.fill = highlight_fill_red
-                print(f'Row {row} - Domain: {domain_cell.value}, Expiry Date: {cell.value} - Marked Red')
-            elif today <= expiry_date <= fifteen_days_later:
-                cell.fill = highlight_fill_orange
-                print(f'Row {row} - Domain: {domain_cell.value}, Expiry Date: {cell.value} - Marked Orange')
-            elif today <= expiry_date <= one_month_later:
-                cell.fill = highlight_fill_yellow
-                print(f'Row {row} - Domain: {domain_cell.value}, Expiry Date: {cell.value} - Marked Yellow')
-            else:
-                cell.fill = highlight_fill_green
-                print(f'Row {row} - Domain: {domain_cell.value}, Expiry Date: {cell.value} - Marked Green')
-        except ValueError:
-            # Skip invalid dates
-            pass
+    expiry_col_idx = df.columns.get_loc('Expiry') + 1  # Excel columns are 1-based
 
-# Save the workbook with the formatting applied
+    for row in range(2, ws.max_row + 1):
+        cell = ws.cell(row=row, column=expiry_col_idx)
+        if cell.value and cell.value != 'Error':
+            try:
+                expiry_date = datetime.strptime(cell.value, '%Y-%m-%d')
+                expiry_date = expiry_date.replace(tzinfo=timezone.utc)
+                if today <= expiry_date <= seven_days_later:
+                    cell.fill = highlight_fill_red
+                elif today <= expiry_date <= fifteen_days_later:
+                    cell.fill = highlight_fill_orange
+                elif today <= expiry_date <= one_month_later:
+                    cell.fill = highlight_fill_yellow
+                else:
+                    cell.fill = highlight_fill_green
+            except ValueError:
+                pass
+
+# Remove the default sheet if it's empty (openpyxl creates a default sheet sometimes)
+if 'Sheet' in wb.sheetnames and not wb['Sheet'].max_row:
+    del wb['Sheet']
+
+# Save the workbook
 wb.save(excel_file)
 
-print('Excel file updated and formatted successfully.')
+print('Excel file updated with all sheets successfully.')
